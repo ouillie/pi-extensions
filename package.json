@@ -1,0 +1,24 @@
+{
+  "name": "pi-neovim",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Tiny Pi extension using headless Neovim for Vim prompt keybindings",
+  "dependencies": {
+    "@msgpack/msgpack": "^3.1.2"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.0",
+    "@earendil-works/pi-tui": "^0.84.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-tui": "^0.84.2",
+    "typescript": "^5.9.2"
+  },
+  "pi": {
+    "extensions": ["./index.ts"]
+  },
+  "scripts": {
+    "check": "tsc --noEmit"
+  }
+}
