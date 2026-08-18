@@ -13,6 +13,22 @@ type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
+function utf8ByteOffsetToUtf16Index(text: string, byteOffset: number): number {
+  if (byteOffset <= 0) return 0;
+  let bytes = 0;
+  let utf16 = 0;
+  for (let i = 0; i < text.length; ) {
+    const cp = text.codePointAt(i)!;
+    const units = cp > 0xffff ? 2 : 1;
+    const size = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    bytes += size;
+    utf16 += units;
+    if (byteOffset <= bytes) return utf16;
+    i += units;
+  }
+  return utf16;
+}
+
 class Nvim {
   private process: ChildProcessWithoutNullStreams;
   private id = 1;
@@ -171,10 +187,15 @@ class NvimEditor extends CustomEditor {
   }
 
   private moveCursorTo(line: number, col: number) {
-    super.handleInput("\x01");
-    for (let i = 0; i < line; i++) super.handleInput("\x1b[B");
-    super.handleInput("\x01");
-    for (let i = 0; i < col; i++) super.handleInput("\x1b[C");
+    const editor = this as unknown as {
+      state: { lines: string[]; cursorLine: number; cursorCol: number };
+      preferredVisualCol: number | null;
+      snappedFromCursorCol: number | null;
+    };
+    editor.state.cursorLine = line;
+    editor.state.cursorCol = utf8ByteOffsetToUtf16Index(editor.state.lines[line] ?? "", col);
+    editor.preferredVisualCol = null;
+    editor.snappedFromCursorCol = null;
   }
 
   override render(width: number): string[] {
