@@ -3,6 +3,7 @@ import { decodeMultiStream, encode } from "@msgpack/msgpack";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { matchesKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
+/** Return true if there is an invocable program called `nvim` on the PATH. */
 function hasNvim() {
   return spawnSync("nvim", ["--version"], { stdio: "ignore" }).status === 0;
 }
@@ -10,9 +11,17 @@ function hasNvim() {
 type Mode = "NORMAL" | "INSERT" | "VISUAL" | "V-LINE" | "V-BLOCK";
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
+// Tmux surrounds pasted text with these CSI markers.
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
+/**
+ * Given a (UTF-16) string
+ * and the hypothetical offset of a byte in that string if it were UTF-8-encoded,
+ * return the index of the UTF-16 code unit corresponding to that UTF-8 byte.
+ *
+ * Neovim represents column indices as UTF-8 byte offsets, but JS uses UTF-16 strings.
+ */
 function utf8ByteOffsetToUtf16Index(text: string, byteOffset: number): number {
   if (byteOffset <= 0) return 0;
   let bytes = 0;
