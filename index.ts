@@ -10,6 +10,9 @@ function hasNvim() {
 type Mode = "NORMAL" | "INSERT" | "VISUAL" | "V-LINE" | "V-BLOCK";
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 
+const BRACKETED_PASTE_START = "\x1b[200~";
+const BRACKETED_PASTE_END = "\x1b[201~";
+
 class Nvim {
   private process: ChildProcessWithoutNullStreams;
   private id = 1;
@@ -62,8 +65,22 @@ class Nvim {
   async input(data: string) {
     await this.ready;
     if (matchesKey(data, "backspace")) data = "<BS>";
-    if (matchesKey(data, "delete")) data = "<Del>";
+    else if (matchesKey(data, "delete")) data = "<Del>";
+    else if (matchesKey(data, "up")) data = "<Up>";
+    else if (matchesKey(data, "down")) data = "<Down>";
+    else if (matchesKey(data, "left")) data = "<Left>";
+    else if (matchesKey(data, "right")) data = "<Right>";
+    else if (matchesKey(data, "home")) data = "<Home>";
+    else if (matchesKey(data, "end")) data = "<End>";
+    else if (matchesKey(data, "pageUp")) data = "<PageUp>";
+    else if (matchesKey(data, "pageDown")) data = "<PageDown>";
     await this.call("nvim_input", [data]);
+    return this.snapshot();
+  }
+
+  async paste(text: string) {
+    await this.ready;
+    await this.call("nvim_paste", [text, false, -1]);
     return this.snapshot();
   }
 
@@ -104,6 +121,8 @@ class NvimEditor extends CustomEditor {
   private nvim = new Nvim();
   private queue = Promise.resolve();
   private nvimWidth = 0;
+  private isPasting = false;
+  private nvimPasteBuffer = "";
 
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
     super(tui, theme, keybindings);
@@ -116,6 +135,25 @@ class NvimEditor extends CustomEditor {
   }
 
   override handleInput(data: string): void {
+    if (data.includes(BRACKETED_PASTE_START)) {
+      this.isPasting = true;
+      this.nvimPasteBuffer = "";
+      data = data.replaceAll(BRACKETED_PASTE_START, "");
+    }
+    if (this.isPasting) {
+      this.nvimPasteBuffer += data;
+      const endIndex = this.nvimPasteBuffer.indexOf(BRACKETED_PASTE_END);
+      if (endIndex === -1) return;
+      const pasteText = this.nvimPasteBuffer.slice(0, endIndex);
+      const remaining = this.nvimPasteBuffer.slice(endIndex + BRACKETED_PASTE_END.length);
+      this.isPasting = false;
+      this.nvimPasteBuffer = "";
+      if (pasteText.length > 0) {
+        this.queue = this.queue.then(async () => this.apply(await this.nvim.paste(pasteText))).catch(() => {});
+      }
+      if (remaining.length > 0) this.handleInput(remaining);
+      return;
+    }
     if (this.mode === "INSERT" && (matchesKey(data, "enter") || matchesKey(data, "ctrl+d"))) {
       super.handleInput(data);
       this.queue = this.queue.then(() => this.nvim.setText(this.getText())).catch(() => {});
