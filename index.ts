@@ -1,7 +1,7 @@
 import { CustomEditor, type ExtensionAPI, type KeybindingsManager } from "@earendil-works/pi-coding-agent";
 import { decodeMultiStream, encode } from "@msgpack/msgpack";
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { matchesKey, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
+import { CURSOR_MARKER, matchesKey, sliceByColumn, truncateToWidth, visibleWidth, type EditorTheme, type TUI } from "@earendil-works/pi-tui";
 
 /** Return true if there is an invocable program called `nvim` on the PATH. */
 function hasNvim() {
@@ -10,6 +10,32 @@ function hasNvim() {
 
 type Mode = "NORMAL" | "INSERT" | "VISUAL" | "V-LINE" | "V-BLOCK";
 type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
+type VisualSelection = { kind: "char" | "line" | "block"; startLine: number; startCol: number; endLine: number; endCol: number };
+
+function stripCursorHighlight(line: string): string {
+  return line.replace(/\x1b\[7m([\s\S]*?)\x1b\[0m/g, "$1");
+}
+
+function splitCursorMarker(line: string): { text: string; markerCol: number | null } {
+  const markerIndex = line.indexOf(CURSOR_MARKER);
+  if (markerIndex === -1) return { text: line, markerCol: null };
+  return { text: line.replace(CURSOR_MARKER, ""), markerCol: visibleWidth(line.slice(0, markerIndex)) };
+}
+
+function restoreCursorMarker(line: string, markerCol: number | null): string {
+  if (markerCol === null) return line;
+  const width = visibleWidth(line);
+  const col = Math.max(0, Math.min(markerCol, width));
+  return `${sliceByColumn(line, 0, col)}${CURSOR_MARKER}${sliceByColumn(line, col, width - col)}`;
+}
+
+function highlightVisibleRange(line: string, startCol: number, endCol: number): string {
+  const width = visibleWidth(line);
+  const start = Math.max(0, Math.min(startCol, width));
+  const end = Math.max(start, Math.min(endCol, width));
+  if (start === end) return line;
+  return `${sliceByColumn(line, 0, start)}\x1b[7m${sliceByColumn(line, start, end - start)}\x1b[27m${sliceByColumn(line, end, width - end)}`;
+}
 
 // Tmux surrounds pasted text with these CSI markers.
 const BRACKETED_PASTE_START = "\x1b[200~";
@@ -36,6 +62,28 @@ function utf8ByteOffsetToUtf16Index(text: string, byteOffset: number): number {
     i += units;
   }
   return utf16;
+}
+
+/** Convert Neovim's visual state into a compact selection range for rendering. */
+function visualSelectionFromState(rawMode: string, startPos: unknown, cursorPos: unknown, startVirtCol: unknown, cursorVirtCol: unknown): VisualSelection | null {
+  if (rawMode !== "v" && rawMode !== "V" && rawMode !== "\x16") return null;
+  if (!Array.isArray(startPos) || !Array.isArray(cursorPos)) return null;
+
+  const startLine = Math.max(0, ((startPos[1] as number | undefined) ?? 1) - 1);
+  const endLine = Math.max(0, ((cursorPos[0] as number | undefined) ?? 1) - 1);
+
+  if (rawMode === "V") {
+    return { kind: "line", startLine: Math.min(startLine, endLine), startCol: 0, endLine: Math.max(startLine, endLine), endCol: Number.MAX_SAFE_INTEGER };
+  }
+
+  const startCol = Math.max(0, Math.min(((startVirtCol as number | undefined) ?? 1) - 1, ((cursorVirtCol as number | undefined) ?? 1) - 1));
+  const endCol = Math.max(((startVirtCol as number | undefined) ?? 1), ((cursorVirtCol as number | undefined) ?? 1));
+
+  if (rawMode === "\x16") {
+    return { kind: "block", startLine: Math.min(startLine, endLine), startCol, endLine: Math.max(startLine, endLine), endCol };
+  }
+
+  return { kind: "char", startLine: Math.min(startLine, endLine), startCol, endLine: Math.max(startLine, endLine), endCol };
 }
 
 class Nvim {
@@ -99,6 +147,7 @@ class Nvim {
     else if (matchesKey(data, "end")) data = "<End>";
     else if (matchesKey(data, "pageUp")) data = "<PageUp>";
     else if (matchesKey(data, "pageDown")) data = "<PageDown>";
+    else if (matchesKey(data, "ctrl+v")) data = "\x16";
     await this.call("nvim_input", [data]);
     return this.snapshot();
   }
@@ -115,16 +164,22 @@ class Nvim {
   }
 
   async snapshot() {
-    const [lines, cur, mode] = await Promise.all([
+    const [lines, cur, mode, visualStart, visualVirtCol, cursorVirtCol] = await Promise.all([
       this.call("nvim_buf_get_lines", [0, 0, -1, true]),
       this.call("nvim_win_get_cursor", [0]),
       this.call("nvim_get_mode", []),
+      this.call("nvim_eval", ["getpos('v')"]),
+      this.call("nvim_eval", ["virtcol('v')"]),
+      this.call("nvim_eval", ["virtcol('.')"]),
     ]);
+    const rawMode = String((mode as { mode: string }).mode);
+    const text = (lines as string[]).join("\n");
     return {
-      text: (lines as string[]).join("\n"),
+      text,
       line: ((cur as number[])[0] ?? 1) - 1,
       col: (cur as number[])[1] ?? 0,
-      mode: modeName(String((mode as { mode: string }).mode)),
+      mode: modeName(rawMode),
+      selection: visualSelectionFromState(rawMode, visualStart, cur, visualVirtCol, cursorVirtCol),
     };
   }
 
@@ -143,6 +198,7 @@ function modeName(m: string): Mode {
 
 class NvimEditor extends CustomEditor {
   private mode: Mode = "INSERT";
+  private selection: VisualSelection | null = null;
   private nvim = new Nvim();
   private queue = Promise.resolve();
   private nvimWidth = 0;
@@ -151,11 +207,13 @@ class NvimEditor extends CustomEditor {
 
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
     super(tui, theme, keybindings);
+    this.onPasteImage = () => this.handleInput("\x16");
     void this.nvim.setText(this.getText());
   }
 
   override setText(text: string): void {
     super.setText(text);
+    this.selection = null;
     this.queue = this.queue.then(() => this.nvim.setText(text)).catch(() => {});
   }
 
@@ -188,8 +246,9 @@ class NvimEditor extends CustomEditor {
     this.queue = this.queue.then(async () => this.apply(await this.nvim.input(data))).catch(() => {});
   }
 
-  private apply(s: { text: string; line: number; col: number; mode: Mode }) {
+  private apply(s: { text: string; line: number; col: number; mode: Mode; selection: VisualSelection | null }) {
     this.mode = s.mode;
+    this.selection = s.selection;
     super.setText(s.text);
     this.moveCursorTo(s.line, s.col);
     this.tui.requestRender();
@@ -213,6 +272,25 @@ class NvimEditor extends CustomEditor {
       this.queue = this.queue.then(() => this.nvim.resize(width)).catch(() => {});
     }
     const lines = super.render(width);
+    const selection = this.selection;
+    if (selection && lines.length > 2) {
+      const startLine = Math.min(selection.startLine, selection.endLine);
+      const endLine = Math.max(selection.startLine, selection.endLine);
+      for (let i = 1; i < lines.length - 1; i++) {
+        const logicalLine = i - 1;
+        if (logicalLine < startLine || logicalLine > endLine) continue;
+        const stripped = stripCursorHighlight(lines[i]!);
+        const { text: line, markerCol } = splitCursorMarker(stripped);
+        if (selection.kind === "line") {
+          lines[i] = restoreCursorMarker(`\x1b[7m${line}\x1b[27m`, markerCol);
+          continue;
+        }
+        const lineWidth = visibleWidth(line);
+        const lineStart = selection.kind === "block" ? selection.startCol : logicalLine === startLine ? selection.startCol : 0;
+        const lineEnd = selection.kind === "block" ? selection.endCol : logicalLine === endLine ? selection.endCol : lineWidth;
+        lines[i] = restoreCursorMarker(highlightVisibleRange(line, lineStart, lineEnd), markerCol);
+      }
+    }
     if (lines.length) {
       const label = ` ${this.mode} `;
       const i = lines.length - 1;
