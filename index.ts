@@ -237,12 +237,17 @@ class NvimEditor extends CustomEditor {
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
-    if (this.mode === "INSERT" && (matchesKey(data, "enter") || matchesKey(data, "ctrl+d"))) {
-      super.handleInput(data);
-      this.queue = this.queue.then(() => this.nvim.setText(this.getText())).catch(() => {});
+    if (this.mode === "INSERT") {
+      const isInsertNewline = matchesKey(data, "shift+enter");
+      if (isInsertNewline || matchesKey(data, "enter") || matchesKey(data, "ctrl+d")) {
+        super.handleInput(isInsertNewline ? "\n" : data);
+        this.queue = this.queue.then(() => this.nvim.setText(this.getText())).catch(() => {});
+        return;
+      }
+    } else if (data === ":") {
+      // Ignore Ex commands.
       return;
     }
-    if (this.mode !== "INSERT" && data === ":") return;
     this.queue = this.queue.then(async () => this.apply(await this.nvim.input(data))).catch(() => {});
   }
 
