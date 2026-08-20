@@ -130,6 +130,9 @@ class Nvim {
   async setText(text: string) {
     const lines = text.split("\n");
     await this.ready;
+    // Cancel any command synchronously waiting for another key before using
+    // deferred APIs. This also makes externally replacing the prompt safe.
+    await this.call("nvim_input", ["\x1b"]);
     await this.call("nvim_buf_set_lines", [0, 0, -1, true, lines]);
     await this.call("nvim_win_set_cursor", [0, [Math.max(1, lines.length), (lines.at(-1) ?? "").length]]);
     await this.call("nvim_command", ["startinsert!"]);
@@ -149,13 +152,11 @@ class Nvim {
     else if (matchesKey(data, "pageDown")) data = "<PageDown>";
     else if (matchesKey(data, "ctrl+v")) data = "\x16";
     await this.call("nvim_input", [data]);
-    return this.snapshot();
   }
 
   async paste(text: string) {
     await this.ready;
     await this.call("nvim_paste", [text, false, -1]);
-    return this.snapshot();
   }
 
   async resize(width: number) {
@@ -201,6 +202,10 @@ class NvimEditor extends CustomEditor {
   private selection: VisualSelection | null = null;
   private nvim = new Nvim();
   private queue = Promise.resolve();
+  // Serialize input delivery, but never put snapshots in this queue: Neovim
+  // may need a later key before its deferred snapshot APIs can run.
+  private nvimQueue = Promise.resolve();
+  private revision = 0;
   private nvimWidth = 0;
   private isPasting = false;
   private nvimPasteBuffer = "";
@@ -208,13 +213,24 @@ class NvimEditor extends CustomEditor {
   constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
     super(tui, theme, keybindings);
     this.onPasteImage = () => this.handleInput("\x16");
-    void this.nvim.setText(this.getText());
+    void this.enqueueNvim(() => this.nvim.setText(this.getText())).catch(() => {});
+  }
+
+  private enqueueNvim<T>(action: () => Promise<T>): Promise<T> {
+    const result = this.nvimQueue.then(action);
+    this.nvimQueue = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private syncText(text: string) {
+    this.revision++;
+    void this.enqueueNvim(() => this.nvim.setText(text)).catch(() => {});
   }
 
   override setText(text: string): void {
     super.setText(text);
     this.selection = null;
-    this.queue = this.queue.then(() => this.nvim.setText(text)).catch(() => {});
+    this.syncText(text);
   }
 
   override handleInput(data: string): void {
@@ -232,7 +248,12 @@ class NvimEditor extends CustomEditor {
       this.isPasting = false;
       this.nvimPasteBuffer = "";
       if (pasteText.length > 0) {
-        this.queue = this.queue.then(async () => this.apply(await this.nvim.paste(pasteText))).catch(() => {});
+        const revision = this.revision;
+        const snapshot = this.enqueueNvim(() => this.nvim.paste(pasteText)).then(() => this.nvim.snapshot());
+        this.queue = this.queue.then(async () => {
+          const state = await snapshot;
+          if (revision === this.revision) this.apply(state);
+        }).catch(() => {});
       }
       if (remaining.length > 0) this.handleInput(remaining);
       return;
@@ -241,14 +262,19 @@ class NvimEditor extends CustomEditor {
       const isInsertNewline = matchesKey(data, "shift+enter");
       if (isInsertNewline || matchesKey(data, "enter") || matchesKey(data, "ctrl+d")) {
         super.handleInput(isInsertNewline ? "\n" : data);
-        this.queue = this.queue.then(() => this.nvim.setText(this.getText())).catch(() => {});
+        this.syncText(this.getText());
         return;
       }
     } else if (data === ":") {
       // Ignore Ex commands.
       return;
     }
-    this.queue = this.queue.then(async () => this.apply(await this.nvim.input(data))).catch(() => {});
+    const revision = this.revision;
+    const snapshot = this.enqueueNvim(() => this.nvim.input(data)).then(() => this.nvim.snapshot());
+    this.queue = this.queue.then(async () => {
+      const state = await snapshot;
+      if (revision === this.revision) this.apply(state);
+    }).catch(() => {});
   }
 
   private apply(s: { text: string; line: number; col: number; mode: Mode; selection: VisualSelection | null }) {
