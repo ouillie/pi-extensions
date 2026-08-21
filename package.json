@@ -4,11 +4,14 @@
   "type": "module",
   "description": "A tiny Pi extension using headless Neovim for Vim keybindings in the prompt editor",
   "pi": {
-    "extensions": ["./index.ts"]
+    "extensions": [
+      "./index.ts"
+    ]
   },
   "scripts": {
     "test": "node --test index.test.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "fix": "gts fix '**/*.ts'"
   },
   "dependencies": {
     "@msgpack/msgpack": "^3.1.2"
@@ -20,6 +23,7 @@
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@earendil-works/pi-tui": "^0.84.2",
+    "gts": "^7.0.0",
     "typescript": "^5.9.2"
   }
 }
