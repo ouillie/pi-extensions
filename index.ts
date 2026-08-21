@@ -197,7 +197,7 @@ function modeName(m: string): Mode {
   return "NORMAL";
 }
 
-class NvimEditor extends CustomEditor {
+export class NvimEditor extends CustomEditor {
   private mode: Mode = "INSERT";
   private selection: VisualSelection | null = null;
   private nvim = new Nvim();
