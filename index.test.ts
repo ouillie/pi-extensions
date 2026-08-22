@@ -1,15 +1,50 @@
 import assert from 'node:assert/strict';
-import {spawnSync} from 'node:child_process';
 import {describe, it} from 'node:test';
 import type {KeybindingsManager} from '@earendil-works/pi-coding-agent';
 import type {EditorTheme, TUI} from '@earendil-works/pi-tui';
 import {NvimEditor} from './index.ts';
 
-/** A zero-based location in the prompt buffer. */
+/**
+ * A location in the prompt buffer.
+ *
+ * Both {@code line} and {@code column} are treated as zero-indexed.
+ */
 type Position = {
   line: number;
-  col: number;
+  column: number;
 };
+
+/** Return an {@link NvimEditor} sufficient for use in tests. */
+function testEditor(): NvimEditor {
+  // Provide minimal fakes to the `NvimEditor` constructor
+  // in order to test that its contents can be edited as expected.
+  const tui = {
+    terminal: {columns: 80, rows: 24},
+    requestRender() {},
+  } as unknown as TUI;
+
+  const theme: EditorTheme = {
+    borderColor: text => text,
+    selectList: {
+      selectedPrefix: text => text,
+      selectedText: text => text,
+      description: text => text,
+      scrollInfo: text => text,
+      noMatch: text => text,
+    },
+  };
+
+  const keybindings = {
+    matches: () => false,
+  } as unknown as KeybindingsManager;
+
+  return new NvimEditor(tui, theme, keybindings);
+}
+
+/** Wait for both input delivery and snapshot application. */
+async function settle(editor: NvimEditor): Promise<void> {
+  await Promise.all([editor['nvimQueue'], editor['queue']]);
+}
 
 /** The externally observable editor state after a series of keystrokes. */
 type EditorState = {
@@ -17,131 +52,68 @@ type EditorState = {
   submitted: boolean;
 };
 
-// After submission, the editor should always be empty.
-const submitted: EditorState = {
-  text: '',
-  submitted: true,
-};
-
-/** Helper to return an {@link EditorState} that contains unsubmitted text. */
-function unsubmitted(text: string): EditorState {
+/**
+ * Helper to return an {@link EditorState} that was submitted
+ * at some point during processing.
+ */
+function submitted(text?: string): EditorState {
   return {
-    text,
+    text: text ?? '',
+    submitted: true,
+  };
+}
+
+/** Helper to return an {@link EditorState} that was never submitted. */
+function unsubmitted(text?: string): EditorState {
+  return {
+    text: text ?? '',
     submitted: false,
   };
 }
 
 /**
- * Narrow white-box view used to position and synchronize the editor.
+ * Execute series of keystrokes
+ * against a fresh editor backed by a real Neovim process.
  *
- * Pi does not publish its internal test fakes,
- * and NvimEditor intentionally has no production API
- * for awaiting snapshots or setting a Neovim cursor.
- * Keeping that test-only access here avoids adding testing concerns to the extension.
- */
-type EditorInternals = {
-  nvim: {
-    call(method: string, args?: unknown[]): Promise<unknown>;
-  };
-  nvimQueue: Promise<void>;
-  queue: Promise<void>;
-  moveCursorTo(line: number, col: number): void;
-};
-
-// These fakes implement only the collaborators reached by non-rendering editor tests.
-// Neovim itself must be real because its input state machine is the behavior under test.
-const theme: EditorTheme = {
-  borderColor: text => text,
-  selectList: {
-    selectedPrefix: text => text,
-    selectedText: text => text,
-    description: text => text,
-    scrollInfo: text => text,
-    noMatch: text => text,
-  },
-};
-
-const tui = {
-  terminal: {columns: 80, rows: 24},
-  requestRender() {},
-} as unknown as TUI;
-
-const keybindings = {
-  matches: () => false,
-} as unknown as KeybindingsManager;
-
-function internals(editor: NvimEditor): EditorInternals {
-  return editor as unknown as EditorInternals;
-}
-
-/**
- * Waits for both input delivery and snapshot application.
- *
- * The timeout is also the regression assertion: with the old single-queue
- * implementation, an incomplete command made these promises wait forever.
- */
-async function settle(editor: NvimEditor): Promise<void> {
-  const pending = internals(editor);
-  let timeout: NodeJS.Timeout | undefined;
-  try {
-    await Promise.race([
-      Promise.all([pending.nvimQueue, pending.queue]),
-      new Promise<never>((_, reject) => {
-        timeout = setTimeout(
-          () =>
-            reject(
-              new Error(
-                'editor did not settle (possible input/snapshot deadlock)',
-              ),
-            ),
-          1500,
-        );
-      }),
-    ]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
-  }
-}
-
-/**
- * Runs a command against a fresh editor backed by a real Neovim process.
- *
- * Each run starts with the requested text and cursor in Normal mode. Characters
- * within one `keys` entry are deliberately sent without waiting: waiting after
- * an incomplete prefix would hide the exact scheduling regression these tests
- * cover. Separate entries are useful when a command changes modes and the next
- * key must be interpreted in that new mode.
+ * Each run starts with the requested text and cursor in Normal mode.
+ * Characters within `keys` are sent in order.
+ * Separate entries are useful when a command changes modes
+ * and the next key must be interpreted in that new mode.
  */
 async function edit(
   text: string,
   cursor: Position,
   keys: string | string[],
 ): Promise<EditorState> {
-  const editor = new NvimEditor(tui, theme, keybindings);
+  const editor = testEditor();
   let submitted = false;
   editor.onSubmit = () => {
     submitted = true;
   };
 
   try {
+    // Set the initial text.
     editor.setText(text);
     await settle(editor);
 
+    // Enter normal mode (the initial mode is insert).
     editor.handleInput('\x1b');
     await settle(editor);
 
-    const state = internals(editor);
-    await state.nvim.call('nvim_win_set_cursor', [
+    // Navigate the cursor to the specified starting position.
+    await editor['nvim'].call('nvim_win_set_cursor', [
       0,
-      [cursor.line + 1, cursor.col],
+      [cursor.line + 1, cursor.column],
     ]);
-    state.moveCursorTo(cursor.line, cursor.col);
+    editor['moveCursorTo'](cursor.line, cursor.column);
 
+    // Send all the input, pausing for processing between chunks.
     for (const chunk of typeof keys === 'string' ? [keys] : keys) {
       for (const key of chunk) editor.handleInput(key);
       await settle(editor);
     }
 
+    // Return the final state of the editor.
     return {text: editor.getText(), submitted};
   } finally {
     editor.dispose();
@@ -157,18 +129,14 @@ async function expectEdit(
   assert.deepEqual(await edit(text, cursor, keys), expected);
 }
 
-const hasNvim =
-  spawnSync('nvim', ['--version'], {stdio: 'ignore'}).status === 0;
-const normal = {line: 0, col: 0};
-
-void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
+void describe('Normal mode', () => {
   void describe('counts', () => {
-    for (let count = 1; count <= 9; count++) {
+    for (const count of [1, 20, 103]) {
       void it(`${count}x applies the count and completes`, async () => {
-        const text = 'abcdefghij';
+        const text = 'abcdefghijklmnopqrstuvwxyz'.repeat(10);
         await expectEdit(
           text,
-          normal,
+          {line: 0, column: 0},
           `${count}x`,
           unsubmitted(text.slice(count)),
         );
@@ -176,63 +144,88 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     }
 
     void it('0 is a complete motion rather than a count prefix', async () => {
-      await expectEdit('abc', {line: 0, col: 2}, '0x', unsubmitted('bc'));
+      await expectEdit('abc', {line: 0, column: 2}, '0x', unsubmitted('bc'));
     });
   });
 
   void describe('control-key prefixes', () => {
     void it('Ctrl-\\ Ctrl-N completes before the following command', async () => {
-      await expectEdit('abc', normal, '\x1c\x0ex', unsubmitted('bc'));
+      await expectEdit(
+        'abc',
+        {line: 0, column: 0},
+        '\x1c\x0ex',
+        unsubmitted('bc'),
+      );
     });
 
     void it('Ctrl-W w completes in a single-window editor', async () => {
-      await expectEdit('abc', normal, '\x17wx', unsubmitted('bc'));
+      await expectEdit(
+        'abc',
+        {line: 0, column: 0},
+        '\x17wx',
+        unsubmitted('bc'),
+      );
     });
   });
 
   void describe('commands that take a character argument', () => {
     void it('" selects a register', async () => {
-      await expectEdit('abc', normal, '"ax', unsubmitted('bc'));
+      await expectEdit('abc', {line: 0, column: 0}, '"ax', unsubmitted('bc'));
     });
 
     void it("m sets a mark and ' jumps to its line", async () => {
-      await expectEdit('abc', normal, "ma$'ax", unsubmitted('bc'));
+      await expectEdit(
+        'abcdefg',
+        {line: 0, column: 0},
+        "lma$hx'ax",
+        unsubmitted('bcdeg'),
+      );
     });
 
     void it('m sets a mark and ` jumps to its exact position', async () => {
-      await expectEdit('abc', normal, 'ma$`ax', unsubmitted('bc'));
+      await expectEdit(
+        'abcdefg',
+        {line: 0, column: 0},
+        'lma$hx`ax',
+        unsubmitted('acdeg'),
+      );
     });
 
     void it('q records a macro and @ executes it', async () => {
-      await expectEdit('abc', normal, 'qaxq@a', unsubmitted('c'));
+      await expectEdit(
+        'abcdefghijk',
+        {line: 0, column: 0},
+        ['qa3~mxA', '_\x1b', '`xq3l@a'],
+        unsubmitted('ABCdefGHIjk__'),
+      );
     });
 
     const characterMotions = [
       {
         name: 'f',
         text: 'abacad',
-        cursor: {line: 0, col: 0},
+        cursor: {line: 0, column: 0},
         keys: 'fcx',
         expected: 'abaad',
       },
       {
         name: 't',
         text: 'abacad',
-        cursor: {line: 0, col: 0},
+        cursor: {line: 0, column: 0},
         keys: 'tcx',
         expected: 'abcad',
       },
       {
         name: 'F',
         text: 'abacad',
-        cursor: {line: 0, col: 5},
+        cursor: {line: 0, column: 5},
         keys: 'Fax',
         expected: 'abacd',
       },
       {
         name: 'T',
         text: 'abacad',
-        cursor: {line: 0, col: 5},
+        cursor: {line: 0, column: 5},
         keys: 'Tax',
         expected: 'abaca',
       },
@@ -250,7 +243,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     }
 
     void it('r consumes the replacement character', async () => {
-      await expectEdit('abc', {line: 0, col: 1}, 'rZ', unsubmitted('aZc'));
+      await expectEdit('abc', {line: 0, column: 1}, 'rZ', unsubmitted('aZc'));
     });
   });
 
@@ -258,7 +251,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     void it('g dispatches a g command', async () => {
       await expectEdit(
         'one\ntwo',
-        {line: 1, col: 2},
+        {line: 1, column: 2},
         'ggx',
         unsubmitted('on\ntwo'),
       );
@@ -267,24 +260,29 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     void it('[ dispatches a bracket command', async () => {
       await expectEdit(
         'one\n\ntwo',
-        {line: 2, col: 0},
+        {line: 2, column: 0},
         '[[x',
         unsubmitted('ne\n\ntwo'),
       );
     });
 
     void it('] dispatches a bracket command', async () => {
-      await expectEdit('one\n\ntwo', normal, ']]x', unsubmitted('one\n\nwo'));
+      await expectEdit(
+        'one\n\ntwo',
+        {line: 0, column: 0},
+        ']]x',
+        unsubmitted('one\n\nwo'),
+      );
     });
 
     void it('z dispatches a z command', async () => {
-      await expectEdit('abc', normal, 'zhx', unsubmitted('bc'));
+      await expectEdit('abc', {line: 0, column: 0}, 'zhx', unsubmitted('bc'));
     });
 
     void it('Z consumes its second command character without hanging', async () => {
       // ZZ and ZQ intentionally terminate Neovim, so use an invalid suffix to
       // verify the same synchronous second-character read without killing it.
-      await expectEdit('abc', normal, 'Zxx', unsubmitted('bc'));
+      await expectEdit('abc', {line: 0, column: 0}, 'Zxx', unsubmitted('bc'));
     });
   });
 
@@ -294,7 +292,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
         const text = 'abcdefghij';
         await expectEdit(
           text,
-          normal,
+          {line: 0, column: 0},
           `d${count}l`,
           unsubmitted(text.slice(count)),
         );
@@ -304,7 +302,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     void it('handles Ctrl-\\ Ctrl-N while an operator is pending', async () => {
       await expectEdit(
         'one two three',
-        normal,
+        {line: 0, column: 0},
         'd\x1c\x0ex',
         unsubmitted('ne two three'),
       );
@@ -313,7 +311,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     void it('handles an F motion', async () => {
       await expectEdit(
         'abacad',
-        {line: 0, col: 5},
+        {line: 0, column: 5},
         'dFa',
         unsubmitted('abacd'),
       );
@@ -322,7 +320,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
     void it('handles a T motion', async () => {
       await expectEdit(
         'abacad',
-        {line: 0, col: 5},
+        {line: 0, column: 5},
         'dTax',
         unsubmitted('abaca'),
       );
@@ -346,7 +344,7 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
       void it(`handles ${testCase.name}`, async () => {
         await expectEdit(
           'one two three',
-          normal,
+          {line: 0, column: 0},
           testCase.keys,
           unsubmitted(testCase.expected),
         );
@@ -356,11 +354,68 @@ void describe('NvimEditor Normal-mode commands', {skip: !hasNvim}, () => {
 
   void describe('submission', () => {
     void it('does not submit ordinary Normal-mode commands', async () => {
-      await expectEdit('abc', normal, 'ggx', unsubmitted('bc'));
+      await expectEdit('abc', {line: 0, column: 0}, 'ggx', unsubmitted('bc'));
     });
 
     void it('submits after a Normal-mode command enters Insert mode', async () => {
-      await expectEdit('abc', {line: 0, col: 2}, ['A', '!', '\r'], submitted);
+      await expectEdit(
+        'abc',
+        {line: 0, column: 2},
+        ['A', '!', '\r'],
+        submitted(),
+      );
     });
+  });
+});
+
+void describe('Insert mode', () => {
+  void it('handles Backspace without leaving Insert mode', async () => {
+    await expectEdit(
+      'abc',
+      {line: 0, column: 0},
+      ['i', 'X\x7fZ'],
+      unsubmitted('Zabc'),
+    );
+  });
+
+  void it('delegates Ctrl-D to the Pi editor', async () => {
+    await expectEdit(
+      'abc',
+      {line: 0, column: 0},
+      ['i', '\x04'],
+      unsubmitted('bc'),
+    );
+  });
+
+  void it('inserts a newline for Shift-Enter and stays in Insert mode', async () => {
+    await expectEdit(
+      'abc',
+      {line: 0, column: 2},
+      ['A', '\n', 'Z'],
+      unsubmitted('abc\nZ'),
+    );
+  });
+});
+
+void describe('Visual mode', () => {
+  void it('uses Ctrl-V for blockwise editing', async () => {
+    await expectEdit(
+      'abc\ndef',
+      {line: 0, column: 1},
+      '\x16jld',
+      unsubmitted('a\nd'),
+    );
+  });
+});
+
+void describe('Cursor synchronization', () => {
+  void it('remains responsive with a prompt longer than 2,000 characters', async () => {
+    const text = 'a'.repeat(2500);
+    await expectEdit(
+      text,
+      {line: 0, column: 2499},
+      '0x',
+      unsubmitted(text.slice(1)),
+    );
   });
 });
