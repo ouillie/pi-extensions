@@ -20,3 +20,14 @@ and make sure the `nvim` binary is available on your `PATH`.
 pnpm install
 pi install .
 ```
+
+### Pasting from tmux
+
+If you want to paste from the tmux clipboard,
+it's best to use bracketed paste control codes
+so the extension can interpret newlines properly.
+
+```
+# .tmux.conf
+bind ] paste-buffer -p
+```

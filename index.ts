@@ -24,8 +24,9 @@ function hasNvim() {
   return spawnSync('nvim', ['--version'], {stdio: 'ignore'}).status === 0;
 }
 
-type Mode = 'NORMAL' | 'INSERT' | 'VISUAL' | 'V-LINE' | 'V-BLOCK';
+type Mode = 'NORMAL' | 'INSERT' | 'VISUAL' | 'LINE' | 'BLOCK';
 type Pending = {resolve: (v: unknown) => void; reject: (e: unknown) => void};
+type WarningLogger = (message: string) => void;
 type VisualSelection = {
   kind: 'char' | 'line' | 'block';
   startLine: number;
@@ -34,9 +35,14 @@ type VisualSelection = {
   endCol: number;
 };
 
+/**
+ * Remove any occurance of a single reverse-video character in a rendered line.
+ *
+ * The default Pi render function displays a single
+ */
 function stripCursorHighlight(line: string): string {
   // eslint-disable-next-line no-control-regex
-  return line.replace(/\x1b\[7m([\s\S]*?)\x1b\[0m/g, '$1');
+  return line.replace(/\x1b\[7m([\s\S]*)\x1b\[0m/g, '$1');
 }
 
 function splitCursorMarker(line: string): {
@@ -99,19 +105,19 @@ function utf8ByteOffsetToUtf16Index(text: string, byteOffset: number): number {
 
 /** Convert Neovim's visual state into a compact selection range for rendering. */
 function visualSelectionFromState(
-  rawMode: string,
+  mode: Mode,
   startPos: unknown,
   cursorPos: unknown,
   startVirtCol: unknown,
   cursorVirtCol: unknown,
 ): VisualSelection | null {
-  if (rawMode !== 'v' && rawMode !== 'V' && rawMode !== '\x16') return null;
+  if (mode !== 'VISUAL' && mode !== 'LINE' && mode !== 'BLOCK') return null;
   if (!Array.isArray(startPos) || !Array.isArray(cursorPos)) return null;
 
   const startLine = Math.max(0, ((startPos[1] as number | undefined) ?? 1) - 1);
   const endLine = Math.max(0, ((cursorPos[0] as number | undefined) ?? 1) - 1);
 
-  if (rawMode === 'V') {
+  if (mode === 'LINE') {
     return {
       kind: 'line',
       startLine: Math.min(startLine, endLine),
@@ -133,7 +139,7 @@ function visualSelectionFromState(
     (cursorVirtCol as number | undefined) ?? 1,
   );
 
-  if (rawMode === '\x16') {
+  if (mode === 'BLOCK') {
     return {
       kind: 'block',
       startLine: Math.min(startLine, endLine),
@@ -157,8 +163,10 @@ class Nvim {
   private id = 1;
   private pending = new Map<number, Pending>();
   private ready: Promise<void>;
+  private warn: WarningLogger;
 
-  constructor() {
+  constructor(warn: WarningLogger) {
+    this.warn = warn;
     this.process = spawn('nvim', ['--clean', '-n', '--headless', '--embed'], {
       stdio: 'pipe',
     });
@@ -217,7 +225,11 @@ class Nvim {
     await this.call('nvim_command', ['startinsert!']);
   }
 
-  async input(data: string) {
+  private async wouldBlock(): Promise<boolean> {
+    return ((await this.call('nvim_get_mode')) as {blocking: boolean}).blocking;
+  }
+
+  async input(data: string): Promise<boolean> {
     await this.ready;
     if (matchesKey(data, 'backspace')) data = '<BS>';
     else if (matchesKey(data, 'delete')) data = '<Del>';
@@ -231,24 +243,46 @@ class Nvim {
     else if (matchesKey(data, 'pageDown')) data = '<PageDown>';
     else if (matchesKey(data, 'ctrl+v')) data = '\x16';
     await this.call('nvim_input', [data]);
+    return this.wouldBlock();
   }
 
-  async paste(text: string) {
+  async paste(text: string): Promise<boolean> {
     await this.ready;
     await this.call('nvim_paste', [text, false, -1]);
+    return this.wouldBlock();
   }
 
-  async resize(width: number) {
+  async resize(width: number): Promise<boolean> {
     await this.ready;
+    if (await this.wouldBlock()) return false;
     await this.call('nvim_set_option_value', [
       'columns',
       Math.max(20, width),
       {},
     ]);
+    return true;
+  }
+
+  /**
+   * Convert a Neovim mode indicator value to an extension-native {@link Mode} label.
+   *
+   * Neovim uses dozens of distinct indicators to provide detail
+   * beyond the 5 modes users are familiar with.
+   * For instance, `n` means "normal" Normal mode,
+   * whereas `ntT` means Normal mode entered from Terminal mode with CTRL-\ CTRL-O.
+   */
+  private modeLabel(mode: string): Mode {
+    if (mode.startsWith('n')) return 'NORMAL';
+    if (mode.startsWith('i') || mode.startsWith('R')) return 'INSERT';
+    if (mode.startsWith('v') || mode.startsWith('s')) return 'VISUAL';
+    if (mode.startsWith('V') || mode.startsWith('S')) return 'LINE';
+    if (mode.startsWith('\x16') || mode.startsWith('\x13')) return 'BLOCK';
+    this.warn(`Unrecognized Neovim mode indicator: ${mode}`);
+    return 'NORMAL';
   }
 
   async snapshot() {
-    const [lines, cur, mode, visualStart, visualVirtCol, cursorVirtCol] =
+    const [lines, cur, nvimMode, visualStart, visualVirtCol, cursorVirtCol] =
       await Promise.all([
         this.call('nvim_buf_get_lines', [0, 0, -1, true]),
         this.call('nvim_win_get_cursor', [0]),
@@ -257,15 +291,15 @@ class Nvim {
         this.call('nvim_eval', ["virtcol('v')"]),
         this.call('nvim_eval', ["virtcol('.')"]),
       ]);
-    const rawMode = String((mode as {mode: string}).mode);
+    const mode = this.modeLabel((nvimMode as {mode: string}).mode);
     const text = (lines as string[]).join('\n');
     return {
       text,
       line: ((cur as number[])[0] ?? 1) - 1,
       col: (cur as number[])[1] ?? 0,
-      mode: modeName(rawMode),
+      mode,
       selection: visualSelectionFromState(
-        rawMode,
+        mode,
         visualStart,
         cur,
         visualVirtCol,
@@ -279,47 +313,40 @@ class Nvim {
   }
 }
 
-function modeName(m: string): Mode {
-  if (m === 'i' || m === 'ic' || m === 'ix') return 'INSERT';
-  if (m === 'v') return 'VISUAL';
-  if (m === 'V') return 'V-LINE';
-  if (m === '\x16') return 'V-BLOCK';
-  return 'NORMAL';
-}
-
 export class NvimEditor extends CustomEditor {
   private mode: Mode = 'INSERT';
   private selection: VisualSelection | null = null;
-  private nvim = new Nvim();
+  private nvim: Nvim;
   private queue = Promise.resolve();
-  // Serialize input delivery, but never put snapshots in this queue: Neovim
-  // may need a later key before its deferred snapshot APIs can run.
-  private nvimQueue = Promise.resolve();
-  private revision = 0;
+  // Invalidates a snapshot if Pi replaces the text while the snapshot is pending.
+  private snapshotGeneration = 0;
   private nvimWidth = 0;
   private isPasting = false;
   private nvimPasteBuffer = '';
 
-  constructor(tui: TUI, theme: EditorTheme, keybindings: KeybindingsManager) {
+  constructor(
+    tui: TUI,
+    theme: EditorTheme,
+    keybindings: KeybindingsManager,
+    warn: WarningLogger = () => {},
+  ) {
     super(tui, theme, keybindings);
+    this.nvim = new Nvim(warn);
     this.onPasteImage = () => this.handleInput('\x16');
-    void this.enqueueNvim(() => this.nvim.setText(this.getText())).catch(
-      () => {},
-    );
+    void this.enqueue(() => this.nvim.setText(this.getText()));
   }
 
-  private enqueueNvim<T>(action: () => Promise<T>): Promise<T> {
-    const result = this.nvimQueue.then(action);
-    this.nvimQueue = result.then(
+  private enqueue(action: () => Promise<unknown>) {
+    this.queue = this.queue.then(action).then(
       () => undefined,
       () => undefined,
     );
-    return result;
+    return this.queue;
   }
 
   private syncText(text: string) {
-    this.revision++;
-    void this.enqueueNvim(() => this.nvim.setText(text)).catch(() => {});
+    this.snapshotGeneration++;
+    void this.enqueue(() => this.nvim.setText(text));
   }
 
   override setText(text: string): void {
@@ -335,8 +362,12 @@ export class NvimEditor extends CustomEditor {
       data = data.replaceAll(BRACKETED_PASTE_START, '');
     }
     if (this.isPasting) {
+      const priorBufferLength = this.nvimPasteBuffer.length;
       this.nvimPasteBuffer += data;
-      const endIndex = this.nvimPasteBuffer.indexOf(BRACKETED_PASTE_END);
+      const endIndex = this.nvimPasteBuffer.indexOf(
+        BRACKETED_PASTE_END,
+        Math.max(priorBufferLength - BRACKETED_PASTE_END.length, 0),
+      );
       if (endIndex === -1) return;
       const pasteText = this.nvimPasteBuffer.slice(0, endIndex);
       const remaining = this.nvimPasteBuffer.slice(
@@ -345,24 +376,18 @@ export class NvimEditor extends CustomEditor {
       this.isPasting = false;
       this.nvimPasteBuffer = '';
       if (pasteText.length > 0) {
-        const revision = this.revision;
-        const snapshot = this.enqueueNvim(() =>
-          this.nvim.paste(pasteText),
-        ).then(() => this.nvim.snapshot());
-        this.queue = this.queue
-          .then(async () => {
-            const state = await snapshot;
-            if (revision === this.revision) this.apply(state);
-          })
-          .catch(() => {});
+        this.processNvim(() => this.nvim.paste(pasteText));
       }
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
     const isEnter = matchesKey(data, 'enter');
+    const isCtrlD = matchesKey(data, 'ctrl+d');
     if (
       (isEnter && (this.mode === 'NORMAL' || this.mode === 'INSERT')) ||
-      (this.mode === 'INSERT' && matchesKey(data, 'ctrl+d'))
+      (isCtrlD &&
+        (this.mode === 'INSERT' ||
+          (this.mode === 'NORMAL' && this.getText().length === 0)))
     ) {
       super.handleInput(data);
       this.syncText(this.getText());
@@ -377,30 +402,24 @@ export class NvimEditor extends CustomEditor {
       // Ignore Ex commands.
       return;
     }
-    const revision = this.revision;
-    const snapshot = this.enqueueNvim(() => this.nvim.input(data)).then(() =>
-      this.nvim.snapshot(),
-    );
-    this.queue = this.queue
-      .then(async () => {
-        const state = await snapshot;
-        if (revision === this.revision) this.apply(state);
-      })
-      .catch(() => {});
+    this.processNvim(() => this.nvim.input(data));
   }
 
-  private apply(s: {
-    text: string;
-    line: number;
-    col: number;
-    mode: Mode;
-    selection: VisualSelection | null;
-  }) {
-    this.mode = s.mode;
-    this.selection = s.selection;
-    super.setText(s.text);
-    this.moveCursorTo(s.line, s.col);
-    this.tui.requestRender();
+  private processNvim(f: () => Promise<boolean>) {
+    const generation = this.snapshotGeneration;
+    void this.enqueue(async () => {
+      // Deferred APIs can block while Neovim is waiting for another key.
+      // Skip the snapshot so the next queued key can complete the command.
+      if (await f()) return;
+
+      const snapshotted = await this.nvim.snapshot();
+      if (generation !== this.snapshotGeneration) return;
+      this.mode = snapshotted.mode;
+      this.selection = snapshotted.selection;
+      super.setText(snapshotted.text);
+      this.moveCursorTo(snapshotted.line, snapshotted.col);
+      this.tui.requestRender();
+    });
   }
 
   private moveCursorTo(line: number, col: number) {
@@ -419,13 +438,21 @@ export class NvimEditor extends CustomEditor {
   }
 
   override render(width: number): string[] {
+    // Resize Neovim if the Pi dimensions changed since the last render.
     if (width !== this.nvimWidth) {
       this.nvimWidth = width;
-      this.queue = this.queue
-        .then(() => this.nvim.resize(width))
-        .catch(() => {});
+      void this.enqueue(async () => {
+        const resized = await this.nvim.resize(width);
+        if (!resized && this.nvimWidth === width) this.nvimWidth = 0;
+      });
     }
+
+    // The upstream editor renders a top border,
+    // the visible wrapped text rows,
+    // and a bottom border.
+    // Any active autocomplete rows follow the bottom border.
     const lines = super.render(width);
+
     const selection = this.selection;
     if (selection && lines.length > 2) {
       const startLine = Math.min(selection.startLine, selection.endLine);
@@ -458,12 +485,15 @@ export class NvimEditor extends CustomEditor {
         );
       }
     }
+
+    // Display the mode label in the bottom-right corner of the editor box.
     if (lines.length) {
       const label = ` ${this.mode} `;
       const i = lines.length - 1;
       if (visibleWidth(lines[i]!) >= label.length)
         lines[i] = truncateToWidth(lines[i]!, width - label.length, '') + label;
     }
+
     return lines;
   }
 
@@ -482,7 +512,10 @@ export default function (pi: ExtensionAPI) {
         'warning',
       );
     ctx.ui.setEditorComponent(
-      (tui, theme, kb) => (editor = new NvimEditor(tui, theme, kb)),
+      (tui, theme, kb) =>
+        (editor = new NvimEditor(tui, theme, kb, message =>
+          ctx.ui.notify(message, 'warning'),
+        )),
     );
   });
   pi.on('session_shutdown', (_event, ctx) => {

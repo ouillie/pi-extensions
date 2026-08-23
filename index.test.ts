@@ -41,9 +41,9 @@ function testEditor(): NvimEditor {
   return new NvimEditor(tui, theme, keybindings);
 }
 
-/** Wait for both input delivery and snapshot application. */
+/** Wait for queued Neovim work and snapshot application. */
 async function settle(editor: NvimEditor): Promise<void> {
-  await Promise.all([editor['nvimQueue'], editor['queue']]);
+  await editor['queue'];
 }
 
 /** The externally observable editor state after a series of keystrokes. */
@@ -252,11 +252,11 @@ void describe('Normal mode', () => {
   });
 
   void describe('command-family prefixes', () => {
-    void it('g dispatches a g command', async () => {
+    void it('g dispatches a g command without blocking the input queue', async () => {
       await expectEdit(
         'one\ntwo',
         {line: 1, column: 2},
-        'ggx',
+        ['g', 'gx'],
         unsubmitted('on\ntwo'),
       );
     });
