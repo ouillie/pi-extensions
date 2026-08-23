@@ -13,9 +13,10 @@ backed by headless [Neovim].
 
 ## Use
 
+[Install Neovim](https://neovim.io/doc/install/)
+and make sure the `nvim` binary is available on your `PATH`.
+
 ```sh
-npm install
+pnpm install
 pi install .
 ```
-
-Or install/copy this package as a Pi package; `package.json` advertises `./index.ts` as the extension entry.

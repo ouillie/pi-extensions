@@ -86,9 +86,12 @@ async function edit(
   keys: string | string[],
 ): Promise<EditorState> {
   const editor = testEditor();
+
   let submitted = false;
-  editor.onSubmit = () => {
+  let result: string | undefined;
+  editor.onSubmit = text => {
     submitted = true;
+    result = text;
   };
 
   try {
@@ -113,8 +116,9 @@ async function edit(
       await settle(editor);
     }
 
-    // Return the final state of the editor.
-    return {text: editor.getText(), submitted};
+    // If submitted, return the the text that was sent to the agent.
+    // If unsubmitted, return the final state of the editor.
+    return {text: result ?? editor.getText(), submitted};
   } finally {
     editor.dispose();
   }
@@ -287,9 +291,9 @@ void describe('Normal mode', () => {
   });
 
   void describe('operator-pending commands', () => {
-    for (let count = 1; count <= 9; count++) {
+    for (const count of [1, 20, 103]) {
       void it(`handles the count ${count}`, async () => {
-        const text = 'abcdefghij';
+        const text = 'abcdefghijklmnopqrstuvwxyz'.repeat(10);
         await expectEdit(
           text,
           {line: 0, column: 0},
@@ -357,18 +361,31 @@ void describe('Normal mode', () => {
       await expectEdit('abc', {line: 0, column: 0}, 'ggx', unsubmitted('bc'));
     });
 
+    void it('submits on Enter', async () => {
+      await expectEdit('abc', {line: 0, column: 0}, '\r', submitted('abc'));
+    });
+
     void it('submits after a Normal-mode command enters Insert mode', async () => {
       await expectEdit(
         'abc',
         {line: 0, column: 2},
         ['A', '!', '\r'],
-        submitted(),
+        submitted('abc!'),
       );
     });
   });
 });
 
 void describe('Insert mode', () => {
+  void it('submits on Enter', async () => {
+    await expectEdit(
+      'abc',
+      {line: 0, column: 0},
+      ['i', '\r'],
+      submitted('abc'),
+    );
+  });
+
   void it('handles Backspace without leaving Insert mode', async () => {
     await expectEdit(
       'abc',

@@ -156,7 +156,7 @@ class Nvim {
   private process: ChildProcessWithoutNullStreams;
   private id = 1;
   private pending = new Map<number, Pending>();
-  ready: Promise<void>;
+  private ready: Promise<void>;
 
   constructor() {
     this.process = spawn('nvim', ['--clean', '-n', '--headless', '--embed'], {
@@ -359,18 +359,21 @@ export class NvimEditor extends CustomEditor {
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
-    if (this.mode === 'INSERT') {
-      const isInsertNewline = matchesKey(data, 'shift+enter');
-      if (
-        isInsertNewline ||
-        matchesKey(data, 'enter') ||
-        matchesKey(data, 'ctrl+d')
-      ) {
-        super.handleInput(isInsertNewline ? '\n' : data);
-        this.syncText(this.getText());
-        return;
-      }
-    } else if (data === ':') {
+    const isEnter = matchesKey(data, 'enter');
+    if (
+      (isEnter && (this.mode === 'NORMAL' || this.mode === 'INSERT')) ||
+      (this.mode === 'INSERT' && matchesKey(data, 'ctrl+d'))
+    ) {
+      super.handleInput(data);
+      this.syncText(this.getText());
+      return;
+    }
+    if (this.mode === 'INSERT' && matchesKey(data, 'shift+enter')) {
+      super.handleInput('\n');
+      this.syncText(this.getText());
+      return;
+    }
+    if (this.mode !== 'INSERT' && data === ':') {
       // Ignore Ex commands.
       return;
     }
@@ -474,14 +477,16 @@ export default function (pi: ExtensionAPI) {
   pi.on('session_start', (_event, ctx) => {
     if (ctx.mode !== 'tui') return;
     if (!hasNvim())
-      return ctx.ui.notify('pi-neovim: nvim not found on PATH', 'warning');
+      return ctx.ui.notify(
+        'pi-headless-neovim: nvim not found on PATH',
+        'warning',
+      );
     ctx.ui.setEditorComponent(
       (tui, theme, kb) => (editor = new NvimEditor(tui, theme, kb)),
     );
   });
   pi.on('session_shutdown', (_event, ctx) => {
     editor?.dispose();
-    editor = undefined;
-    ctx.ui.setEditorComponent(undefined);
+    ctx.ui.setEditorComponent((editor = undefined));
   });
 }
