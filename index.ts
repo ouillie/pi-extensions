@@ -248,7 +248,7 @@ class Nvim {
 
   async paste(text: string): Promise<boolean> {
     await this.ready;
-    await this.call('nvim_paste', [text, false, -1]);
+    await this.call('nvim_paste', [text, true, -1]);
     return this.wouldBlock();
   }
 
