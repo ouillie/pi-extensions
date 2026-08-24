@@ -398,8 +398,11 @@ export class NvimEditor extends CustomEditor {
       this.syncText(this.getText());
       return;
     }
-    if (this.mode !== 'INSERT' && data === ':') {
-      // Ignore Ex commands.
+    if (
+      this.mode !== 'INSERT' &&
+      (data === ':' || data === '/' || data === '?')
+    ) {
+      // Ignore Ex commands and searches.
       return;
     }
     this.processNvim(() => this.nvim.input(data));

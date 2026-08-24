@@ -356,6 +356,19 @@ void describe('Normal mode', () => {
     }
   });
 
+  void describe('ex-style commands', () => {
+    for (const key of [':', '/', '?']) {
+      void it(`silently ignores ${key}`, async () => {
+        await expectEdit(
+          'abc',
+          {line: 0, column: 0},
+          `${key}x`,
+          unsubmitted('bc'),
+        );
+      });
+    }
+  });
+
   void describe('submission', () => {
     void it('does not submit ordinary Normal-mode commands', async () => {
       await expectEdit('abc', {line: 0, column: 0}, 'ggx', unsubmitted('bc'));
