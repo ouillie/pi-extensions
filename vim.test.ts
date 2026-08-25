@@ -21,6 +21,8 @@ function testEditor(): NvimEditor {
   const tui = {
     terminal: {columns: 80, rows: 24},
     requestRender() {},
+    getShowHardwareCursor: () => false,
+    setShowHardwareCursor() {},
   } as unknown as TUI;
 
   const theme: EditorTheme = {

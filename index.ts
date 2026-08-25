@@ -35,33 +35,10 @@ type VisualSelection = {
   endCol: number;
 };
 
-/**
- * Remove any occurance of a single reverse-video character in a rendered line.
- *
- * The default Pi render function displays a single
- */
+/** Remove Pi's reverse-video software cursor from a rendered line. */
 function stripCursorHighlight(line: string): string {
   // eslint-disable-next-line no-control-regex
   return line.replace(/\x1b\[7m([\s\S]*)\x1b\[0m/g, '$1');
-}
-
-function splitCursorMarker(line: string): {
-  text: string;
-  markerCol: number | null;
-} {
-  const markerIndex = line.indexOf(CURSOR_MARKER);
-  if (markerIndex === -1) return {text: line, markerCol: null};
-  return {
-    text: line.replace(CURSOR_MARKER, ''),
-    markerCol: visibleWidth(line.slice(0, markerIndex)),
-  };
-}
-
-function restoreCursorMarker(line: string, markerCol: number | null): string {
-  if (markerCol === null) return line;
-  const width = visibleWidth(line);
-  const col = Math.max(0, Math.min(markerCol, width));
-  return `${sliceByColumn(line, 0, col)}${CURSOR_MARKER}${sliceByColumn(line, col, width - col)}`;
 }
 
 function highlightVisibleRange(
@@ -73,7 +50,15 @@ function highlightVisibleRange(
   const start = Math.max(0, Math.min(startCol, width));
   const end = Math.max(start, Math.min(endCol, width));
   if (start === end) return line;
-  return `${sliceByColumn(line, 0, start)}\x1b[7m${sliceByColumn(line, start, end - start)}\x1b[27m${sliceByColumn(line, end, width - end)}`;
+
+  const markerIndex = line.indexOf(CURSOR_MARKER);
+  const markerCol =
+    markerIndex === -1 ? 0 : visibleWidth(line.slice(0, markerIndex));
+  if (markerIndex !== -1) line = line.replace(CURSOR_MARKER, '');
+
+  const highlighted = `${sliceByColumn(line, 0, start)}\x1b[7m${sliceByColumn(line, start, end - start)}\x1b[27m${sliceByColumn(line, end, width - end)}`;
+  if (markerIndex === -1) return highlighted;
+  return `${sliceByColumn(highlighted, 0, markerCol)}${CURSOR_MARKER}${sliceByColumn(highlighted, markerCol, width - markerCol)}`;
 }
 
 // Tmux surrounds pasted text with these CSI markers.
@@ -323,6 +308,7 @@ export class NvimEditor extends CustomEditor {
   private nvimWidth = 0;
   private isPasting = false;
   private nvimPasteBuffer = '';
+  private priorShowHardwareCursor: boolean;
 
   constructor(
     tui: TUI,
@@ -331,6 +317,8 @@ export class NvimEditor extends CustomEditor {
     warn: WarningLogger = () => {},
   ) {
     super(tui, theme, keybindings);
+    this.priorShowHardwareCursor = tui.getShowHardwareCursor();
+    tui.setShowHardwareCursor(true);
     this.nvim = new Nvim(warn);
     this.onPasteImage = () => this.handleInput('\x16');
     void this.enqueue(() => this.nvim.setText(this.getText()));
@@ -454,7 +442,7 @@ export class NvimEditor extends CustomEditor {
     // the visible wrapped text rows,
     // and a bottom border.
     // Any active autocomplete rows follow the bottom border.
-    const lines = super.render(width);
+    const lines = super.render(width).map(stripCursorHighlight);
 
     const selection = this.selection;
     if (selection && lines.length > 2) {
@@ -463,10 +451,9 @@ export class NvimEditor extends CustomEditor {
       for (let i = 1; i < lines.length - 1; i++) {
         const logicalLine = i - 1;
         if (logicalLine < startLine || logicalLine > endLine) continue;
-        const stripped = stripCursorHighlight(lines[i]!);
-        const {text: line, markerCol} = splitCursorMarker(stripped);
+        const line = lines[i]!;
         if (selection.kind === 'line') {
-          lines[i] = restoreCursorMarker(`\x1b[7m${line}\x1b[27m`, markerCol);
+          lines[i] = `\x1b[7m${line}\x1b[27m`;
           continue;
         }
         const lineWidth = visibleWidth(line);
@@ -482,10 +469,7 @@ export class NvimEditor extends CustomEditor {
             : logicalLine === endLine
               ? selection.endCol
               : lineWidth;
-        lines[i] = restoreCursorMarker(
-          highlightVisibleRange(line, lineStart, lineEnd),
-          markerCol,
-        );
+        lines[i] = highlightVisibleRange(line, lineStart, lineEnd);
       }
     }
 
@@ -500,7 +484,9 @@ export class NvimEditor extends CustomEditor {
     return lines;
   }
 
-  dispose() {
+  dispose(restoreHardwareCursor = true) {
+    if (restoreHardwareCursor)
+      this.tui.setShowHardwareCursor(this.priorShowHardwareCursor);
     this.nvim.quit();
   }
 }
@@ -521,8 +507,10 @@ export default function (pi: ExtensionAPI) {
         )),
     );
   });
-  pi.on('session_shutdown', (_event, ctx) => {
-    editor?.dispose();
+  pi.on('session_shutdown', (event, ctx) => {
+    // On quit, Pi has already restored the terminal cursor before this handler runs.
+    // Restoring a disabled hardware-cursor setting now would hide it again.
+    editor?.dispose(event.reason !== 'quit');
     ctx.ui.setEditorComponent((editor = undefined));
   });
 }
