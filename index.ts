@@ -227,6 +227,8 @@ class Nvim {
     else if (matchesKey(data, 'pageUp')) data = '<PageUp>';
     else if (matchesKey(data, 'pageDown')) data = '<PageDown>';
     else if (matchesKey(data, 'ctrl+v')) data = '\x16';
+    // Neovim treats `<` as the start of its special-key notation.
+    else if (data === '<') data = '<LT>';
     await this.call('nvim_input', [data]);
     return this.wouldBlock();
   }

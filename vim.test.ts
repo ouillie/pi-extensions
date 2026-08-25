@@ -410,6 +410,15 @@ void describe('Insert mode', () => {
     );
   });
 
+  void it('inserts a literal less-than sign', async () => {
+    await expectEdit(
+      'abc',
+      {line: 0, column: 0},
+      ['i', '<'],
+      unsubmitted('<abc'),
+    );
+  });
+
   void it('delegates Ctrl-D to the Pi editor', async () => {
     await expectEdit(
       'abc',
