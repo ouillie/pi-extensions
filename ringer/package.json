@@ -1,0 +1,10 @@
+{
+  "name": "pi-ringer",
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Ring the terminal bell when Pi is ready for your next prompt.",
+  "keywords": ["pi-package"],
+  "pi": {
+    "extensions": ["./index.ts"]
+  }
+}
