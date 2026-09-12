@@ -248,9 +248,18 @@ void describe('Normal mode', () => {
       });
     }
 
-    void it('r consumes the replacement character', async () => {
-      await expectEdit('abc', {line: 0, column: 1}, 'rZ', unsubmitted('aZc'));
-    });
+    for (const char of ['Z', '?', '/', ':']) {
+      void it(`r consumes the replacement character ${char}`, async () => {
+        await expectEdit('abc', {line: 0, column: 1}, `r${char}`, unsubmitted(`a${char}c`));
+        await expectEdit('abc', {line: 0, column: 1}, ['r', char], unsubmitted(`a${char}c`));
+      });
+    }
+
+    for (const char of ['?', '/', ':']) {
+      void it(`f consumes the target character ${char}`, async () => {
+        await expectEdit(`a${char}b`, {line: 0, column: 0}, `f${char}x`, unsubmitted('ab'));
+      });
+    }
   });
 
   void describe('command-family prefixes', () => {

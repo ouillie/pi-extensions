@@ -194,6 +194,10 @@ class Nvim {
     await this.call('nvim_command', [
       'set noswapfile undofile& viminfo= shada= virtualedit=block selection=inclusive',
     ]);
+    // Disable Ex commands and searches.
+    for (const key of [':', '/', '?']) {
+      await this.call('nvim_command', [`noremap ${key} <Nop>`]);
+    }
     await this.call('nvim_command', ['enew']);
     await this.call('nvim_command', ['startinsert!']);
   }
@@ -402,13 +406,6 @@ export class NvimEditor extends CustomEditor {
     if (this.mode === 'INSERT' && matchesKey(data, 'shift+enter')) {
       super.handleInput('\n');
       this.syncText(this.getText());
-      return;
-    }
-    if (
-      this.mode !== 'INSERT' &&
-      (data === ':' || data === '/' || data === '?')
-    ) {
-      // Ignore Ex commands and searches.
       return;
     }
     this.processNvim(() => this.nvim.input(data));
