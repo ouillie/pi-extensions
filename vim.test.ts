@@ -449,6 +449,70 @@ void describe('Visual mode', () => {
   });
 });
 
+void describe('Terminal key translation', () => {
+  const mappings = [
+    {data: '\x1b[27;5u', key: '<C-Esc>'},
+    {data: '\x1b[27;5;27~', key: '<C-Esc>'},
+    {data: '\x1b[119;5u', key: '<C-w>'},
+    {data: '\x1b[1;3D', key: '<A-Left>'},
+    {data: '\x1b[Z', key: '<S-Tab>'},
+    {data: '\x1b[43;5u', key: '<C-+>'},
+    {data: '\x1b[60;5u', key: '<C-LT>'},
+    {data: '\x1b[97;7u', key: '<C-A-a>'},
+    {data: '\x7f', key: '<BS>'},
+    {data: '\x1b[3~', key: '<Del>'},
+  ];
+  for (const {data, key} of mappings) {
+    void it(`forwards ${JSON.stringify(data)} as ${key}`, async () => {
+      const editor = testEditor();
+      try {
+        await settle(editor);
+        // A Neovim mapping verifies key identity, including its modifiers.
+        await editor['nvim'].call('nvim_set_keymap', [
+          'i',
+          key,
+          'X',
+          {noremap: true},
+        ]);
+        editor.handleInput(data);
+        await settle(editor);
+        assert.equal(editor.getText(), 'X');
+      } finally {
+        editor.dispose();
+      }
+    });
+  }
+
+  const inputs = [
+    {data: '\x1b[27;5u', expected: 'hello'},
+    {data: '\x1b[999;5u', expected: 'hello'},
+    {data: '\x1b[97u', expected: 'helloa'},
+    {data: '\x1b[97:65;2u', expected: 'helloA'},
+    {data: '\x1b[233u', expected: 'helloé'},
+    {data: '\x1b[60u', expected: 'hello<'},
+    {data: '<Esc><BS>é+', expected: 'hello<Esc><BS>é+'},
+    {
+      data: '\x1b[200~<Esc>\x1b[27;5u\x1b[201~',
+      expected: 'hello<Esc>\x1b[27;5u',
+    },
+  ];
+  for (const {data, expected} of inputs) {
+    void it(`safely handles ${JSON.stringify(data)} in Insert mode`, async () => {
+      const editor = testEditor();
+      try {
+        await settle(editor);
+        editor.handleInput('hello');
+        await settle(editor);
+        editor.handleInput(data);
+        await settle(editor);
+        assert.equal(editor.getText(), expected);
+      } finally {
+        editor.dispose();
+      }
+    });
+  }
+});
+
 void describe('Cursor synchronization', () => {
   void it('remains responsive with a prompt longer than 2,000 characters', async () => {
     const text = 'a'.repeat(2500);

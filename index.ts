@@ -11,7 +11,9 @@ import {
 } from 'node:child_process';
 import {
   CURSOR_MARKER,
+  decodeKittyPrintable,
   matchesKey,
+  parseKey,
   sliceByColumn,
   truncateToWidth,
   visibleWidth,
@@ -216,19 +218,33 @@ class Nvim {
 
   async input(data: string): Promise<boolean> {
     await this.ready;
-    if (matchesKey(data, 'backspace')) data = '<BS>';
-    else if (matchesKey(data, 'delete')) data = '<Del>';
-    else if (matchesKey(data, 'up')) data = '<Up>';
-    else if (matchesKey(data, 'down')) data = '<Down>';
-    else if (matchesKey(data, 'left')) data = '<Left>';
-    else if (matchesKey(data, 'right')) data = '<Right>';
-    else if (matchesKey(data, 'home')) data = '<Home>';
-    else if (matchesKey(data, 'end')) data = '<End>';
-    else if (matchesKey(data, 'pageUp')) data = '<PageUp>';
-    else if (matchesKey(data, 'pageDown')) data = '<PageDown>';
-    else if (matchesKey(data, 'ctrl+v')) data = '\x16';
-    // Neovim treats `<` as the start of its special-key notation.
-    else if (data === '<') data = '<LT>';
+    const printable = decodeKittyPrintable(data);
+    const key = parseKey(data);
+    if (printable !== undefined) {
+      data = printable.replaceAll('<', '<LT>');
+    } else if (key !== undefined) {
+      // Keep a trailing '+' intact when it is the key itself.
+      const parts = key.split(/\+(?=.)/);
+      const name = parts.pop()!;
+      const aliases: Record<string, string> = {
+        escape: 'Esc',
+        enter: 'CR',
+        backspace: 'BS',
+        delete: 'Del',
+        '<': 'LT',
+      };
+      const modifiers = parts
+        .map(part => `${part[0]!.toUpperCase()}-`)
+        .join('');
+      data =
+        modifiers || name.length > 1
+          ? `<${modifiers}${aliases[name] ?? name}>`
+          : name.replaceAll('<', '<LT>');
+    } else {
+      // Unknown terminal sequences must never become Normal-mode commands.
+      if (data.includes('\x1b')) return this.wouldBlock();
+      data = data.replaceAll('<', '<LT>');
+    }
     await this.call('nvim_input', [data]);
     return this.wouldBlock();
   }
