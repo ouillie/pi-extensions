@@ -4,9 +4,12 @@ Tiny [Pi] extension that replaces the prompt editor with a `CustomEditor`
 backed by headless [Neovim].
 
 - Looks for `nvim` on `PATH`.
-- Ignores `:` in normal mode (Ex commands are disabled).
-- From normal mode, `Ctrl+v` enters visual block mode.
-  From insert mode, `Ctrl+v` can be used to paste images as normal.
+- Double-tap `Esc` to send a single `Esc` to Pi
+  (single-tap enters normal mode).
+- Ex commands and searches are disabled
+  (ignores `:`, `/`, and `?` in normal mode).
+- From normal mode, `Ctrl+v` enters visual block mode as normal in Vim.
+  From insert mode, `Ctrl+v` can be used to paste images as normal in Pi.
 
 [Pi]: https://pi.dev/
 [Neovim]: https://neovim.io/

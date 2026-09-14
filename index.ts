@@ -21,6 +21,9 @@ import {
   type TUI,
 } from '@earendil-works/pi-tui';
 
+/** Mirror the hard-coded 500ms ceiling Pi uses for the double-click latency. */
+const DOUBLE_CLICK_DELAY_MS = 500;
+
 /** Return true if there is an invocable program called `nvim` on the PATH. */
 function hasNvim() {
   return spawnSync('nvim', ['--version'], {stdio: 'ignore'}).status === 0;
@@ -322,6 +325,7 @@ class Nvim {
 
 export class NvimEditor extends CustomEditor {
   private mode: Mode = 'INSERT';
+  private lastEscapeTime = -Infinity;
   private selection: VisualSelection | null = null;
   private nvim: Nvim;
   private queue = Promise.resolve();
@@ -366,6 +370,18 @@ export class NvimEditor extends CustomEditor {
   }
 
   override handleInput(data: string): void {
+    if (!this.isPasting && matchesKey(data, 'escape')) {
+      const previousEscapeTime = this.lastEscapeTime;
+      this.lastEscapeTime = Date.now();
+      // Only the first Esc in a rapid sequence belongs to Neovim.
+      if (this.lastEscapeTime - previousEscapeTime < DOUBLE_CLICK_DELAY_MS) {
+        super.handleInput('\x1b');
+        return;
+      }
+    } else {
+      this.lastEscapeTime = -Infinity;
+    }
+
     if (data.includes(BRACKETED_PASTE_START)) {
       this.isPasting = true;
       this.nvimPasteBuffer = '';
