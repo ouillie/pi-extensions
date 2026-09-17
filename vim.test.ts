@@ -38,7 +38,8 @@ function testEditor(): NvimEditor {
 
   const keybindings = {
     matches: (data: string, action: string) =>
-      matchesKey(data, 'ctrl+o') && action === 'app.tools.expand',
+      (matchesKey(data, 'ctrl+o') && action === 'app.tools.expand') ||
+      (matchesKey(data, 'ctrl+t') && action === 'app.thinking.toggle'),
   } as unknown as KeybindingsManager;
 
   return new NvimEditor(tui, theme, keybindings);
@@ -459,13 +460,20 @@ void describe('Visual mode', () => {
   });
 });
 
-void describe('Ctrl-O routing', () => {
-  for (const data of ['\x0f', '\x1b[111;5u']) {
+void describe('Insert-only Pi shortcut routing', () => {
+  const shortcuts = [
+    {key: '<C-o>', action: 'app.tools.expand', inputs: ['\x0f', '\x1b[111;5u']},
+    {key: '<C-t>', action: 'app.thinking.toggle', inputs: ['\x14', '\x1b[116;5u']},
+  ] as const;
+  const cases = shortcuts.flatMap(({key, action, inputs}) =>
+    inputs.map(data => ({key, action, data})),
+  );
+  for (const {key, action, data} of cases) {
     for (const normal of [false, true]) {
       void it(`routes ${JSON.stringify(data)} in ${normal ? 'Normal' : 'Insert'} mode`, async () => {
         const editor = testEditor();
-        let expansions = 0;
-        editor.onAction('app.tools.expand', () => expansions++);
+        let toggles = 0;
+        editor.onAction(action, () => toggles++);
         try {
           await settle(editor);
           if (normal) {
@@ -475,12 +483,12 @@ void describe('Ctrl-O routing', () => {
           // A mapping makes delivery to Neovim observable in either mode.
           await editor['nvim'].call('nvim_set_keymap', [
             normal ? 'n' : 'i',
-            '<C-o>',
+            key,
             normal ? 'iX<Esc>' : 'X',
             {noremap: true},
           ]);
           editor.handleInput(data);
-          assert.equal(expansions, normal ? 0 : 1);
+          assert.equal(toggles, normal ? 0 : 1);
           await settle(editor);
           assert.equal(editor.getText(), normal ? 'X' : '');
           assert.equal(editor['mode'], normal ? 'NORMAL' : 'INSERT');

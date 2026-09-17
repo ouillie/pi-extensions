@@ -407,7 +407,23 @@ export class NvimEditor extends CustomEditor {
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
-    if (this.mode === 'INSERT' && matchesKey(data, 'ctrl+o')) {
+    // Normally in Vim:
+    // - Ctrl+o:
+    //   * Normal mode: jump backward through the jumplist
+    //   * Insert mode: temporarily switch to Normal mode
+    // - Ctrl+t:
+    //   * Normal mode: jump backward through the tag stack (i.e. "ctags")
+    //   * Insert mode: indent the current line
+    //
+    // All these key combinations are preserved in Normal mode,
+    // but overridden in Insert mode to be passed as-is to pi,
+    // which by default:
+    // - Ctrl+o: toggle tool output expansion
+    // - Ctrl+t: toggle thinking block visibility
+    if (
+      this.mode === 'INSERT' &&
+      (matchesKey(data, 'ctrl+o') || matchesKey(data, 'ctrl+t'))
+    ) {
       super.handleInput(data);
       return;
     }
