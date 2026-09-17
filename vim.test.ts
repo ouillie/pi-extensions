@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import {describe, it} from 'node:test';
 import type {KeybindingsManager} from '@earendil-works/pi-coding-agent';
-import type {EditorTheme, TUI} from '@earendil-works/pi-tui';
+import {matchesKey, type EditorTheme, type TUI} from '@earendil-works/pi-tui';
 import {NvimEditor} from './index.ts';
 
 /**
@@ -37,7 +37,8 @@ function testEditor(): NvimEditor {
   };
 
   const keybindings = {
-    matches: () => false,
+    matches: (data: string, action: string) =>
+      matchesKey(data, 'ctrl+o') && action === 'app.tools.expand',
   } as unknown as KeybindingsManager;
 
   return new NvimEditor(tui, theme, keybindings);
@@ -456,6 +457,39 @@ void describe('Visual mode', () => {
       unsubmitted('a\nd'),
     );
   });
+});
+
+void describe('Ctrl-O routing', () => {
+  for (const data of ['\x0f', '\x1b[111;5u']) {
+    for (const normal of [false, true]) {
+      void it(`routes ${JSON.stringify(data)} in ${normal ? 'Normal' : 'Insert'} mode`, async () => {
+        const editor = testEditor();
+        let expansions = 0;
+        editor.onAction('app.tools.expand', () => expansions++);
+        try {
+          await settle(editor);
+          if (normal) {
+            editor.handleInput('\x1b');
+            await settle(editor);
+          }
+          // A mapping makes delivery to Neovim observable in either mode.
+          await editor['nvim'].call('nvim_set_keymap', [
+            normal ? 'n' : 'i',
+            '<C-o>',
+            normal ? 'iX<Esc>' : 'X',
+            {noremap: true},
+          ]);
+          editor.handleInput(data);
+          assert.equal(expansions, normal ? 0 : 1);
+          await settle(editor);
+          assert.equal(editor.getText(), normal ? 'X' : '');
+          assert.equal(editor['mode'], normal ? 'NORMAL' : 'INSERT');
+        } finally {
+          editor.dispose();
+        }
+      });
+    }
+  }
 });
 
 void describe('Terminal key translation', () => {

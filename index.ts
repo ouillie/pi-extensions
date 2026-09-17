@@ -407,6 +407,10 @@ export class NvimEditor extends CustomEditor {
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
+    if (this.mode === 'INSERT' && matchesKey(data, 'ctrl+o')) {
+      super.handleInput(data);
+      return;
+    }
     const isEnter = matchesKey(data, 'enter');
     const isCtrlD = matchesKey(data, 'ctrl+d');
     if (
