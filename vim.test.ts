@@ -14,6 +14,17 @@ type Position = {
   column: number;
 };
 
+const piShortcuts = [
+  ['o', 'app.tools.expand'],
+  ['t', 'app.thinking.toggle'],
+  ['l', 'app.model.select'],
+  ['g', 'app.editor.external'],
+  ['x', 'app.message.copy'],
+  ['z', 'app.suspend'],
+  ['c', 'app.clear'],
+  ['v', 'app.clipboard.pasteImage'],
+] as const;
+
 /** Return an {@link NvimEditor} sufficient for use in tests. */
 function testEditor(): NvimEditor {
   // Provide minimal fakes to the `NvimEditor` constructor
@@ -38,8 +49,9 @@ function testEditor(): NvimEditor {
 
   const keybindings = {
     matches: (data: string, action: string) =>
-      (matchesKey(data, 'ctrl+o') && action === 'app.tools.expand') ||
-      (matchesKey(data, 'ctrl+t') && action === 'app.thinking.toggle'),
+      piShortcuts.some(([key, id]) =>
+        action === id && matchesKey(data, `ctrl+${key}`),
+      ),
   } as unknown as KeybindingsManager;
 
   return new NvimEditor(tui, theme, keybindings);
@@ -461,18 +473,14 @@ void describe('Visual mode', () => {
 });
 
 void describe('Pi shortcut routing', () => {
-  const shortcuts = [
-    {
-      key: '<C-o>', action: 'app.tools.expand',
-      inputs: ['\x0f', '\x1b[111;5u'],
-      shiftedInputs: ['\x1b[111;6u', '\x1b[27;6;111~'],
-    },
-    {
-      key: '<C-t>', action: 'app.thinking.toggle',
-      inputs: ['\x14', '\x1b[116;5u'],
-      shiftedInputs: ['\x1b[116;6u', '\x1b[27;6;116~'],
-    },
-  ] as const;
+  const shortcuts = piShortcuts.map(([letter, action]) => {
+    const code = letter.charCodeAt(0);
+    return {
+      key: `<C-${letter}>`, action,
+      inputs: [String.fromCharCode(code - 96), `\x1b[${code};5u`],
+      shiftedInputs: [`\x1b[${code};6u`, `\x1b[27;6;${code}~`],
+    };
+  });
   const cases = shortcuts.flatMap(({key, action, inputs, shiftedInputs}) => [
     ...inputs.map(data => ({key, action, data, shifted: false})),
     ...shiftedInputs.map(data => ({
@@ -484,7 +492,11 @@ void describe('Pi shortcut routing', () => {
       void it(`routes ${JSON.stringify(data)} in ${normal ? 'Normal' : 'Insert'} mode`, async () => {
         const editor = testEditor();
         let toggles = 0;
-        editor.onAction(action, () => toggles++);
+        if (action === 'app.clipboard.pasteImage') {
+          editor.onPasteImage = () => toggles++;
+        } else {
+          editor.onAction(action, () => toggles++);
+        }
         try {
           await settle(editor);
           if (normal) {

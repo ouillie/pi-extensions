@@ -346,7 +346,6 @@ export class NvimEditor extends CustomEditor {
     this.priorShowHardwareCursor = tui.getShowHardwareCursor();
     tui.setShowHardwareCursor(true);
     this.nvim = new Nvim(warn);
-    this.onPasteImage = () => this.handleInput('\x16');
     void this.enqueue(() => this.nvim.setText(this.getText()));
   }
 
@@ -420,8 +419,13 @@ export class NvimEditor extends CustomEditor {
     // which by default:
     // - Ctrl+o: toggle tool output expansion
     // - Ctrl+t: toggle thinking block visibility
+    // The shortcuts below also cover model selection, external editing,
+    // message copying, suspension, clearing the editor, and image pasting.
     // Shift makes these Pi shortcuts available in Normal mode as well.
-    for (const [key, piInput] of [['o', '\x0f'], ['t', '\x14']] as const) {
+    for (const [key, piInput] of [
+      ['o', '\x0f'], ['t', '\x14'], ['l', '\x0c'], ['g', '\x07'],
+      ['x', '\x18'], ['z', '\x1a'], ['c', '\x03'], ['v', '\x16'],
+    ] as const) {
       const shifted = matchesKey(data, `ctrl+shift+${key}`);
       if (
         (this.mode === 'INSERT' && matchesKey(data, `ctrl+${key}`)) ||
