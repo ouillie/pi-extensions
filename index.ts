@@ -3,7 +3,7 @@ import {
   type ExtensionAPI,
   type KeybindingsManager,
 } from '@earendil-works/pi-coding-agent';
-import {decodeMultiStream, encode} from '@msgpack/msgpack';
+import { decodeMultiStream, encode } from '@msgpack/msgpack';
 import {
   spawn,
   spawnSync,
@@ -26,11 +26,11 @@ const DOUBLE_CLICK_DELAY_MS = 500;
 
 /** Return true if there is an invocable program called `nvim` on the PATH. */
 function hasNvim() {
-  return spawnSync('nvim', ['--version'], {stdio: 'ignore'}).status === 0;
+  return spawnSync('nvim', ['--version'], { stdio: 'ignore' }).status === 0;
 }
 
 type Mode = 'NORMAL' | 'INSERT' | 'VISUAL' | 'LINE' | 'BLOCK';
-type Pending = {resolve: (v: unknown) => void; reject: (e: unknown) => void};
+type Pending = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
 type WarningLogger = (message: string) => void;
 type VisualSelection = {
   kind: 'char' | 'line' | 'block';
@@ -161,7 +161,7 @@ class Nvim {
       stdio: 'pipe',
     });
     void this.readLoop();
-    this.process.stderr.on('data', () => {});
+    this.process.stderr.on('data', () => { });
     this.process.on('exit', () => {
       for (const p of this.pending.values()) p.reject(new Error('nvim exited'));
       this.pending.clear();
@@ -189,7 +189,7 @@ class Nvim {
     const id = this.id++;
     this.process.stdin.write(encode([0, id, method, args]));
     return new Promise<unknown>((resolve, reject) =>
-      this.pending.set(id, {resolve, reject}),
+      this.pending.set(id, { resolve, reject }),
     );
   }
 
@@ -205,22 +205,26 @@ class Nvim {
     await this.call('nvim_command', ['startinsert!']);
   }
 
-  async setText(text: string) {
+  async setText(text: string, cursorInsertAtEnd = false) {
     const lines = text.split('\n');
     await this.ready;
-    // Cancel any command synchronously waiting for another key before using
-    // deferred APIs. This also makes externally replacing the prompt safe.
-    await this.call('nvim_input', ['\x1b']);
+    // Cancel any command synchronously waiting for another key by sending Escape
+    // before using deferred APIs.
+    if (cursorInsertAtEnd || await this.wouldBlock()) {
+      await this.call('nvim_input', ['\x1b']);
+    }
     await this.call('nvim_buf_set_lines', [0, 0, -1, true, lines]);
-    await this.call('nvim_win_set_cursor', [
-      0,
-      [Math.max(1, lines.length), (lines.at(-1) ?? '').length],
-    ]);
-    await this.call('nvim_command', ['startinsert!']);
+    if (cursorInsertAtEnd) {
+      await this.call('nvim_win_set_cursor', [
+        0,
+        [Math.max(1, lines.length), (lines.at(-1) ?? '').length],
+      ]);
+      await this.call('nvim_command', ['startinsert!']);
+    }
   }
 
   private async wouldBlock(): Promise<boolean> {
-    return ((await this.call('nvim_get_mode')) as {blocking: boolean}).blocking;
+    return ((await this.call('nvim_get_mode')) as { blocking: boolean }).blocking;
   }
 
   async input(data: string): Promise<boolean> {
@@ -301,7 +305,7 @@ class Nvim {
         this.call('nvim_eval', ["virtcol('v')"]),
         this.call('nvim_eval', ["virtcol('.')"]),
       ]);
-    const mode = this.modeLabel((nvimMode as {mode: string}).mode);
+    const mode = this.modeLabel((nvimMode as { mode: string }).mode);
     const text = (lines as string[]).join('\n');
     return {
       text,
@@ -319,7 +323,7 @@ class Nvim {
   }
 
   quit() {
-    this.call('nvim_command', ['qa!']).catch(() => {});
+    this.call('nvim_command', ['qa!']).catch(() => { });
   }
 }
 
@@ -340,13 +344,13 @@ export class NvimEditor extends CustomEditor {
     tui: TUI,
     theme: EditorTheme,
     keybindings: KeybindingsManager,
-    warn: WarningLogger = () => {},
+    warn: WarningLogger = () => { },
   ) {
     super(tui, theme, keybindings);
     this.priorShowHardwareCursor = tui.getShowHardwareCursor();
     tui.setShowHardwareCursor(true);
     this.nvim = new Nvim(warn);
-    void this.enqueue(() => this.nvim.setText(this.getText()));
+    void this.enqueue(() => this.nvim.setText(this.getText(), true));
   }
 
   private enqueue(action: () => Promise<unknown>) {
@@ -357,15 +361,15 @@ export class NvimEditor extends CustomEditor {
     return this.queue;
   }
 
-  private syncText(text: string) {
+  private syncText(text: string, cursorInsertAtEnd = false) {
     this.snapshotGeneration++;
-    void this.enqueue(() => this.nvim.setText(text));
+    void this.enqueue(() => this.nvim.setText(text, cursorInsertAtEnd));
   }
 
   override setText(text: string): void {
     super.setText(text);
     this.selection = null;
-    this.syncText(text);
+    this.syncText(text, true);
   }
 
   override handleInput(data: string): void {
@@ -406,6 +410,7 @@ export class NvimEditor extends CustomEditor {
       if (remaining.length > 0) this.handleInput(remaining);
       return;
     }
+
     // Normally in Vim:
     // - Ctrl+o:
     //   * Normal mode: jump backward through the jumplist
@@ -422,34 +427,33 @@ export class NvimEditor extends CustomEditor {
     // The shortcuts below also cover model selection, external editing,
     // message copying, suspension, clearing the editor, and image pasting.
     // Shift makes these Pi shortcuts available in Normal mode as well.
+    if (this.mode === 'NORMAL' && this.getText() === '' && matchesKey(data, 'ctrl+d')) {
+      super.handleInput('\x04');
+      return;
+    }
     for (const [key, piInput] of [
       ['o', '\x0f'], ['t', '\x14'], ['l', '\x0c'], ['g', '\x07'],
       ['x', '\x18'], ['z', '\x1a'], ['c', '\x03'], ['v', '\x16'],
+      ['d', '\x04'],
     ] as const) {
-      const shifted = matchesKey(data, `ctrl+shift+${key}`);
-      if (
-        (this.mode === 'INSERT' && matchesKey(data, `ctrl+${key}`)) ||
-        (shifted && (this.mode === 'NORMAL' || this.mode === 'INSERT'))
-      ) {
-        super.handleInput(shifted ? piInput : data);
+      if (matchesKey(data, `ctrl+shift+${key}`) || (this.mode === 'INSERT' && matchesKey(data, `ctrl+${key}`))) {
+        super.handleInput(piInput);
+        // Pi deletes forward directly in its own buffer rather than calling setText.
+        if (key === 'd') {
+          this.syncText(this.getText());
+        }
         return;
       }
     }
     const isEnter = matchesKey(data, 'enter');
-    const isCtrlD = matchesKey(data, 'ctrl+d');
-    if (
-      (isEnter && (this.mode === 'NORMAL' || this.mode === 'INSERT')) ||
-      (isCtrlD &&
-        (this.mode === 'INSERT' ||
-          (this.mode === 'NORMAL' && this.getText().length === 0)))
-    ) {
+    if (isEnter && (this.mode === 'NORMAL' || this.mode === 'INSERT')) {
       super.handleInput(data);
-      this.syncText(this.getText());
+      this.syncText(this.getText(), true);
       return;
     }
     if (this.mode === 'INSERT' && matchesKey(data, 'shift+enter')) {
       super.handleInput('\n');
-      this.syncText(this.getText());
+      this.syncText(this.getText(), true);
       return;
     }
     this.processNvim(() => this.nvim.input(data));
@@ -474,7 +478,7 @@ export class NvimEditor extends CustomEditor {
 
   private moveCursorTo(line: number, col: number) {
     const editor = this as unknown as {
-      state: {lines: string[]; cursorLine: number; cursorCol: number};
+      state: { lines: string[]; cursorLine: number; cursorCol: number };
       preferredVisualCol: number | null;
       snappedFromCursorCol: number | null;
     };
@@ -550,7 +554,7 @@ export class NvimEditor extends CustomEditor {
   }
 }
 
-export default function (pi: ExtensionAPI) {
+export default function(pi: ExtensionAPI) {
   let editor: NvimEditor | undefined;
   pi.on('session_start', (_event, ctx) => {
     if (ctx.mode !== 'tui') return;
@@ -561,9 +565,9 @@ export default function (pi: ExtensionAPI) {
       );
     ctx.ui.setEditorComponent(
       (tui, theme, kb) =>
-        (editor = new NvimEditor(tui, theme, kb, message =>
-          ctx.ui.notify(message, 'warning'),
-        )),
+      (editor = new NvimEditor(tui, theme, kb, message =>
+        ctx.ui.notify(message, 'warning'),
+      )),
     );
   });
   pi.on('session_shutdown', (event, ctx) => {

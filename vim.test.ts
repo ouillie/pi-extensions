@@ -49,6 +49,7 @@ function testEditor(): NvimEditor {
 
   const keybindings = {
     matches: (data: string, action: string) =>
+      (action === 'app.exit' && matchesKey(data, 'ctrl+d')) ||
       piShortcuts.some(([key, id]) =>
         action === id && matchesKey(data, `ctrl+${key}`),
       ),
@@ -469,6 +470,88 @@ void describe('Visual mode', () => {
       '\x16jld',
       unsubmitted('a\nd'),
     );
+  });
+});
+
+void describe('Ctrl-D synchronization', () => {
+  for (const normal of [false, true]) {
+    for (const data of ['\x04', '\x1b[100;6u']) {
+      void it(`exits an empty prompt with ${JSON.stringify(data)}, normal=${normal}`, async () => {
+        const editor = testEditor();
+        let exits = 0;
+        editor.onCtrlD = () => exits++;
+        try {
+          await settle(editor);
+          if (normal) {
+            editor.handleInput('\x1b');
+            await settle(editor);
+          }
+          editor.handleInput(data);
+          assert.equal(exits, 1);
+          await settle(editor);
+        } finally {
+          editor.dispose();
+        }
+      });
+    }
+    for (const data of normal ? ['\x1b[100;6u'] : ['\x04', '\x1b[100;6u']) {
+      void it(`synchronizes deletion with ${JSON.stringify(data)}, normal=${normal}`, async () => {
+        const editor = testEditor();
+        try {
+          editor.setText('éabc');
+          await settle(editor);
+          editor.handleInput('\x1b');
+          await settle(editor);
+          editor.handleInput('0l');
+          await settle(editor);
+          if (!normal) {
+            editor.handleInput('i');
+            await settle(editor);
+          }
+          editor.handleInput(data);
+          await settle(editor);
+          assert.equal(editor.getText(), 'ébc');
+          const snapshot = await editor['nvim'].snapshot();
+          assert.equal(snapshot.text, 'ébc');
+          assert.equal(snapshot.col, 2);
+          assert.equal(snapshot.mode, normal ? 'NORMAL' : 'INSERT');
+          editor.handleInput(normal ? 'x' : 'Z');
+          await settle(editor);
+          assert.equal(editor.getText(), normal ? 'éc' : 'éZbc');
+        } finally {
+          editor.dispose();
+        }
+      });
+    }
+  }
+
+  void it('synchronizes deletion of a newline in Insert mode', async () => {
+    await expectEdit(
+      'ab\ncd', {line: 0, column: 1}, ['a', '\x04', 'Z'], unsubmitted('abZcd'),
+    );
+  });
+
+  void it('cancels a pending Normal-mode command before synchronizing', async () => {
+    const editor = testEditor();
+    try {
+      editor.setText('abc');
+      await settle(editor);
+      editor.handleInput('\x1b');
+      await settle(editor);
+      editor.handleInput('0');
+      await settle(editor);
+      editor.handleInput('r');
+      await settle(editor);
+      editor.handleInput('\x1b[100;6u');
+      await settle(editor);
+      assert.equal((await editor['nvim'].snapshot()).text, 'bc');
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  void it('keeps unshifted Ctrl-D in Neovim for nonempty Normal mode', async () => {
+    await expectEdit('abc', {line: 0, column: 0}, '\x04', unsubmitted('abc'));
   });
 });
 
