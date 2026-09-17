@@ -460,15 +460,26 @@ void describe('Visual mode', () => {
   });
 });
 
-void describe('Insert-only Pi shortcut routing', () => {
+void describe('Pi shortcut routing', () => {
   const shortcuts = [
-    {key: '<C-o>', action: 'app.tools.expand', inputs: ['\x0f', '\x1b[111;5u']},
-    {key: '<C-t>', action: 'app.thinking.toggle', inputs: ['\x14', '\x1b[116;5u']},
+    {
+      key: '<C-o>', action: 'app.tools.expand',
+      inputs: ['\x0f', '\x1b[111;5u'],
+      shiftedInputs: ['\x1b[111;6u', '\x1b[27;6;111~'],
+    },
+    {
+      key: '<C-t>', action: 'app.thinking.toggle',
+      inputs: ['\x14', '\x1b[116;5u'],
+      shiftedInputs: ['\x1b[116;6u', '\x1b[27;6;116~'],
+    },
   ] as const;
-  const cases = shortcuts.flatMap(({key, action, inputs}) =>
-    inputs.map(data => ({key, action, data})),
-  );
-  for (const {key, action, data} of cases) {
+  const cases = shortcuts.flatMap(({key, action, inputs, shiftedInputs}) => [
+    ...inputs.map(data => ({key, action, data, shifted: false})),
+    ...shiftedInputs.map(data => ({
+      key: key.replace('<C-', '<C-S-'), action, data, shifted: true,
+    })),
+  ]);
+  for (const {key, action, data, shifted} of cases) {
     for (const normal of [false, true]) {
       void it(`routes ${JSON.stringify(data)} in ${normal ? 'Normal' : 'Insert'} mode`, async () => {
         const editor = testEditor();
@@ -488,9 +499,10 @@ void describe('Insert-only Pi shortcut routing', () => {
             {noremap: true},
           ]);
           editor.handleInput(data);
-          assert.equal(toggles, normal ? 0 : 1);
+          const sentToNvim = normal && !shifted;
+          assert.equal(toggles, sentToNvim ? 0 : 1);
           await settle(editor);
-          assert.equal(editor.getText(), normal ? 'X' : '');
+          assert.equal(editor.getText(), sentToNvim ? 'X' : '');
           assert.equal(editor['mode'], normal ? 'NORMAL' : 'INSERT');
         } finally {
           editor.dispose();

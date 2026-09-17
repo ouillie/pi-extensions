@@ -420,12 +420,16 @@ export class NvimEditor extends CustomEditor {
     // which by default:
     // - Ctrl+o: toggle tool output expansion
     // - Ctrl+t: toggle thinking block visibility
-    if (
-      this.mode === 'INSERT' &&
-      (matchesKey(data, 'ctrl+o') || matchesKey(data, 'ctrl+t'))
-    ) {
-      super.handleInput(data);
-      return;
+    // Shift makes these Pi shortcuts available in Normal mode as well.
+    for (const [key, piInput] of [['o', '\x0f'], ['t', '\x14']] as const) {
+      const shifted = matchesKey(data, `ctrl+shift+${key}`);
+      if (
+        (this.mode === 'INSERT' && matchesKey(data, `ctrl+${key}`)) ||
+        (shifted && (this.mode === 'NORMAL' || this.mode === 'INSERT'))
+      ) {
+        super.handleInput(shifted ? piInput : data);
+        return;
+      }
     }
     const isEnter = matchesKey(data, 'enter');
     const isCtrlD = matchesKey(data, 'ctrl+d');
