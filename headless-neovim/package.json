@@ -1,5 +1,5 @@
 {
-  "name": "pi-headless-neovim",
+  "name": "headless-neovim",
   "version": "0.0.0",
   "type": "module",
   "description": "A tiny Pi extension using headless Neovim for Vim keybindings in the prompt editor",
