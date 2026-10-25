@@ -1,0 +1,12 @@
+packages:
+  - headless-neovim
+  - ringer
+  - vim-tree
+
+# Pi supplies these peers at runtime; development copies live at the root.
+autoInstallPeers: false
+
+allowBuilds:
+  '@google/genai': false
+  esbuild: false
+  protobufjs: false

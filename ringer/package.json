@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Ring the terminal bell when Pi is ready for your next prompt.",
   "keywords": ["pi-package"],
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
   "pi": {
     "extensions": ["./index.ts"]
   }
