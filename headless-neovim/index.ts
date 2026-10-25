@@ -40,10 +40,11 @@ type VisualSelection = {
   endCol: number;
 };
 
-/** Remove Pi's reverse-video software cursor from a rendered line. */
+/** Remove Pi's software cursor while preserving its text and hardware marker. */
 function stripCursorHighlight(line: string): string {
+  // Remove deferred cursor styling before selection slicing duplicates it.
   // eslint-disable-next-line no-control-regex
-  return line.replace(/\x1b\[7m([\s\S]*)\x1b\[0m/g, '$1');
+  return line.replace(/\x1b_pi:\/?fc\x07/g, '');
 }
 
 function highlightVisibleRange(

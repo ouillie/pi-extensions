@@ -73,6 +73,19 @@ void describe('Rendering', () => {
     );
   });
 
+  void it('preserves the character under the hardware cursor in Normal mode', async () => {
+    assert.deepEqual(
+      await render({
+        text: 'abc',
+        line: 0,
+        col: 1,
+        mode: 'NORMAL',
+        selection: null,
+      }),
+      ['────────────', `a${CURSOR_MARKER}bc         `, '────\x1b[0m NORMAL '],
+    );
+  });
+
   void it('renders a characterwise visual selection around the cursor marker', async () => {
     assert.deepEqual(
       await render({
